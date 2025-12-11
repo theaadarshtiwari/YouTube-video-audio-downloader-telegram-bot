@@ -1,65 +1,92 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from pytube import YouTube
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+import yt_dlp
+import os
 
-⬇️⬇️ YAHAN TOKEN PASTE KARNA HAI BAS ⬇️⬇️
+TOKEN = "8049358854:AAG9PfWtuNfXkLiEG_6Sqrmta9MCqvC3tOU"
 
-TOKEN = "8289235946:AAFWf7ZC-59jHDT5UI78k04meDa1LcRxCfE"
+def start(update, context):
+    update.message.reply_text(
+        "YouTube link bhejo 🔗\nPhir quality choose karo 🎥🎶"
+    )
 
-PROMO = "\n\n📢 Please join our channel: @lifeonbots"
+def ask_quality(update, context):
+    url = update.message.text.strip()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-msg = (
-"👋 Welcome to YouTube Downloader Bot!\n\n"
-"📌 YouTube link bhejo, bot video/audio dono de dega.\n"
-"🔥 Fast & HD Downloader\n"
-f"{PROMO}"
-)
-await update.message.reply_text(msg, parse_mode="Markdown")
+    if "http" not in url:
+        update.message.reply_text("❌ Valid YouTube link bhejo.")
+        return
 
-async def handle_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
-url = update.message.text
+    context.user_data['url'] = url
 
-if "youtube.com" not in url and "youtu.be" not in url:  
-    await update.message.reply_text("❌ Please send a valid YouTube URL.")  
-    return  
+    keyboard = [
+        [InlineKeyboardButton("144p", callback_data="144"),
+         InlineKeyboardButton("240p", callback_data="240")],
+        [InlineKeyboardButton("360p", callback_data="360"),
+         InlineKeyboardButton("480p", callback_data="480")],
+        [InlineKeyboardButton("720p HD", callback_data="720"),
+         InlineKeyboardButton("1080p Full HD", callback_data="1080")],
+        [InlineKeyboardButton("🎵 Audio MP3", callback_data="audio")]
+    ]
 
-await update.message.reply_text("⏳ Downloading... Please wait...")  
+    update.message.reply_text(
+        "Quality choose karo 👇",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-try:  
-    yt = YouTube(url)  
-    title = yt.title  
+def button(update, context):
+    query = update.callback_query
+    quality = query.data
+    url = context.user_data.get("url")
 
-    video_stream = yt.streams.filter(progressive=True, file_extension="mp4").get_highest_resolution()  
-    video_path = video_stream.download(filename="video.mp4")  
+    query.answer()
+    query.edit_message_text("⏳ Download ho raha hai...")
 
-    audio_stream = yt.streams.filter(only_audio=True).first()  
-    audio_path = audio_stream.download(filename="audio.mp3")  
+    if quality == "audio":
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": "audio.%(ext)s",
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+        }
+        file_path = "audio.mp3"
+    else:
+        ydl_opts = {
+            "format": f"bestvideo[height<={quality}]+bestaudio/best",
+            "merge_output_format": "mp4",
+            "outtmpl": "video.mp4",
+        }
+        file_path = "video.mp4"
 
-    await update.message.reply_video(  
-        video=open("video.mp4", "rb"),  
-        caption=f"🎬 **Video:** {title}{PROMO}",  
-        parse_mode="Markdown"  
-    )  
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
 
-    await update.message.reply_audio(  
-        audio=open("audio.mp3", "rb"),  
-        caption=f"🎵 **Audio:** {title}{PROMO}",  
-        parse_mode="Markdown"  
-    )  
+        if quality == "audio":
+            query.message.reply_audio(open(file_path, "rb"))
+        else:
+            query.message.reply_video(open(file_path, "rb"))
 
-except Exception as e:  
-    await update.message.reply_text("❌ Error! Download nahi ho paya.")  
-    print(e)
+        os.remove(file_path)
+
+    except Exception as e:
+        query.message.reply_text("❌ Error! Link sahi hai ya video private to nahi?")
 
 def main():
-app = ApplicationBuilder().token(TOKEN).build()
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
 
-app.add_handler(CommandHandler("start", start))  
-app.add_handler(MessageHandler(filters.TEXT, handle_youtube))  
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, ask_quality))
+    dp.add_handler(CallbackQueryHandler(button))
 
-print("Bot Started...")  
-app.run_polling()
+    updater.start_polling()
+    updater.idle()
 
-if name == "main":
-main()
+if __name__ == "__main__":
+    main()
