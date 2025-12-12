@@ -1,15 +1,26 @@
+import os
+from threading import Thread
+from flask import Flask
+from pytube import YouTube
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from pytube import YouTube
-import os
+from config import TOKEN
 
-# Bot token
-TOKEN = "YOUR_BOT_TOKEN_HERE"
-
-# Channel join message
 CHANNEL_MESSAGE = "\n\nPlease join our channel @YourChannel"
+MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB in bytes
 
-# Dictionary to store user video info temporarily
+# Flask for 24/7 uptime
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is running 24/7!"
+
+def keep_alive():
+    t = Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": 8080})
+    t.start()
+
+# Temporary user data
 user_data = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -23,7 +34,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         yt = YouTube(url)
         user_data[update.effective_user.id] = {"yt": yt}
-        
         keyboard = [
             [InlineKeyboardButton("Video", callback_data="video")],
             [InlineKeyboardButton("Audio", callback_data="audio")]
@@ -44,8 +54,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     yt = user_data[user_id]["yt"]
 
+    # Video download flow
     if query.data == "video":
-        # Show quality options (highest 1080p, 720p, 480p if available)
         streams = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc()
         keyboard = []
         added_resolutions = set()
@@ -55,39 +65,56 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 added_resolutions.add(s.resolution)
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text("Choose video quality:" + CHANNEL_MESSAGE, reply_markup=reply_markup)
+
+    # Audio download flow
     elif query.data == "audio":
-        audio_stream = yt.streams.filter(only_audio=True).first()
-        msg = await query.edit_message_text("Downloading audio... ⏳" + CHANNEL_MESSAGE)
-        try:
-            out_file = audio_stream.download()
-            await query.message.reply_document(document=InputFile(out_file), filename=os.path.basename(out_file))
-            os.remove(out_file)
-            await msg.edit_text("Audio sent successfully!" + CHANNEL_MESSAGE)
-        except Exception as e:
-            await msg.edit_text(f"Failed to download audio.\nError: {e}" + CHANNEL_MESSAGE)
-        del user_data[user_id]
+        streams = yt.streams.filter(only_audio=True).order_by("abr").desc()
+        keyboard = []
+        for s in streams:
+            keyboard.append([InlineKeyboardButton(f"{s.abr}", callback_data=f"audio_{s.itag}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("Choose audio quality:" + CHANNEL_MESSAGE, reply_markup=reply_markup)
+
+    # Download video by itag
     elif query.data.startswith("video_"):
         itag = int(query.data.split("_")[1])
         stream = yt.streams.get_by_itag(itag)
-        msg = await query.edit_message_text("Downloading video... ⏳" + CHANNEL_MESSAGE)
-        try:
-            out_file = stream.download()
+        await download_and_send(query, stream, "video")
+
+    # Download audio by itag
+    elif query.data.startswith("audio_"):
+        itag = int(query.data.split("_")[1])
+        stream = yt.streams.get_by_itag(itag)
+        await download_and_send(query, stream, "audio")
+
+async def download_and_send(query, stream, dtype):
+    msg = await query.edit_message_text(f"Downloading {dtype}... ⏳" + CHANNEL_MESSAGE)
+    try:
+        out_file = stream.download()
+        # Check file size
+        if os.path.getsize(out_file) > MAX_FILE_SIZE:
+            await msg.edit_text(f"{dtype.capitalize()} too large (>2GB). Cannot send via Telegram." + CHANNEL_MESSAGE)
+        else:
             await query.message.reply_document(document=InputFile(out_file), filename=os.path.basename(out_file))
-            os.remove(out_file)
-            await msg.edit_text("Video sent successfully!" + CHANNEL_MESSAGE)
-        except Exception as e:
-            await msg.edit_text(f"Failed to download video.\nError: {e}" + CHANNEL_MESSAGE)
-        del user_data[user_id]
+            await msg.edit_text(f"{dtype.capitalize()} sent successfully!" + CHANNEL_MESSAGE)
+        os.remove(out_file)
+    except Exception as e:
+        await msg.edit_text(f"Failed to download {dtype}.\nError: {e}" + CHANNEL_MESSAGE)
+    finally:
+        # Clean up user data
+        if query.from_user.id in user_data:
+            del user_data[query.from_user.id]
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    keep_alive()  # Flask server for 24/7
+    app_telegram = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    app_telegram.add_handler(CommandHandler("start", start))
+    app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+    app_telegram.add_handler(CallbackQueryHandler(button_handler))
 
     print("Bot is running...")
-    app.run_polling()
+    app_telegram.run_polling()
 
 if __name__ == "__main__":
     main()
